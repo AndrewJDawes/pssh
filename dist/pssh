@@ -7420,6 +7420,7 @@ class PSSH extends Console_Abstract
         'export',
         'import',
         'init_host',
+        'open_host',
         'list',
         'merge',
         'search',
@@ -7840,6 +7841,146 @@ ____KEYS____;
 
     }
 
+    protected $___open_host = [
+        "Open host",
+        ["Alias of host", "string", "required"],
+        ["Specific JSON file(s) to use when searching for alias - defaults to first found in json-config-paths that contains the host alias", "string"],
+    ];
+    public function open_host($alias, $paths=null) {
+
+        require __DIR__ . '/vendor/autoload.php';
+
+        $paths = $this->prepArg($paths, $this->json_config_paths);
+        
+        // Sync before - to get latest data
+        $this->sync();
+
+        $host_data = false;
+        $host_json = false;
+
+        foreach ($paths as $config_path)
+        {
+            $config = new PSSH_Config($this);
+            $config->readJSON($config_path);
+            $host_data = $config->getHosts($alias);
+            if (!empty($host_data) and !empty($host_data[0]))
+            {
+                $host_data = $host_data[0];
+                $host_json = json_encode($host_data, JSON_PRETTY_PRINT);
+                break;
+            }
+        }
+
+        if (empty($host_data) or empty($host_json))
+        {
+            $this->error("Host '$alias' not found in config files or invalid data");
+            return;
+        }
+
+        /*
+        Array
+        (
+            [ssh] => Array
+                (
+                    [user] => pi
+                    [hostname] => 192.168.0.61
+                    [port] => 2223
+                    [identityfile] => ~/.ssh/id_rsa
+                )
+
+            [pssh] => Array
+                (
+                    [alias] => pistachio
+                )
+
+        )
+        */
+
+        // use phpseclib3\Net\SSH2;
+        // use phpseclib3\System\SSH\Agent;
+
+        /*
+        $config = [
+            "user" => "pi",
+            "hostname" => "192.168.0.61",
+            "port" => "2223",
+            "identityfile" => "~\/.ssh\/id_rsa"
+        ];
+        */
+
+        if (empty($host_data['ssh'])) {
+            $this->error("Host '$alias' not found in config files or invalid data");
+            return;
+        }
+
+        $this->output('Checking ssh-agent...');
+        $result_code;
+        $success = exec('ssh-add -l', $output, $result_code);
+        switch ($result_code) {
+            case 0:
+                break;
+            case 1:
+                $this->error('Have you added your key to the ssh-agent? Try: ssh-add');
+                return;
+                break;
+            case 2:
+                $this->error('Have you started your ssh-agent? Try: eval "$(ssh-agent)"');
+                return;
+                break;
+            default:
+                $this->warn('Something seems off with your ssh agent...');
+                break;
+        }
+
+        $this->output('Connecting...');
+        $host_data_ssh = $host_data['ssh'];
+        $ssh = new phpseclib3\Net\SSH2($host_data_ssh['hostname'], $host_data_ssh['port'] ?? null);
+        $ssh_logged_in = false;
+        $agent_error = null;
+        
+        try {
+            $agent = new phpseclib3\System\SSH\Agent;
+            $ssh_logged_in = $ssh->login($host_data_ssh['user'], $agent);
+        } catch (\Exception $e) {
+            $agent_error = $e->getMessage();
+        }
+
+        if (!$ssh_logged_in) {
+            $error = '';
+            if (!empty($agent_error)) {
+                $error = $agent_error;
+            } else {
+                // If connection failed just because key not copied, there will not be an Exception thrown. Handling here.
+                $error = 'Have you copied your key to the host? Try: pssh init_host <host>';
+            }
+            $this->error($error);
+            return;
+        }
+
+        echo $ssh->read('username@username:~$');
+
+        while (true) {
+            $input = readline('');
+            if ('exit' === $input) {
+                break;
+            }
+            $command = $input . "\n";
+            $ssh->write($command); // note the "\n"
+            $output = $ssh->read('username@username:~$');
+            $expression = '/^' . $input . '[\s]*/'; // Note no "\n"
+            $output = preg_replace(
+                $expression,
+                '',
+                $output,
+                1
+            );
+            echo $output;
+        }
+
+        print('Exiting!');
+
+    }
+
     protected $___merge = [
         "Merge config from one JSON file into another",
         ["JSON file to merge from", "string", "required"],
@@ -7915,6 +8056,15 @@ ____KEYS____;
                             {
                                 $focused_key = $list_instance->getFocusedKey();
                                 $this->init_host($focused_key);
+                            },
+                        ],
+                        'open_host' => [
+                            'description' => 'Open the focused host',
+                            'keys' => 'o',
+                            'callback' => function ($list_instance)
+                            {
+                                $focused_key = $list_instance->getFocusedKey();
+                                $this->open_host($focused_key);
                             },
                         ],
                         'delete_host' => [
